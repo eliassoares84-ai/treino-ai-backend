@@ -349,5 +349,4 @@ Retorne o JSON completo corrigido agora.`;
     console.error('AI gerarTreino erro:', err);
     return res.status(500).json({ error: 'Falha ao processar a requisição de treino via IA' });
   }
-}Set-Location "c:\Users\admin\Desktop\projeto-fitness - antes do ERP\projeto-fitness-frontend"
-npx expo start --lan --port 8082 --clear
+}
