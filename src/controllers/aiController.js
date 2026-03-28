@@ -122,7 +122,7 @@ function applyInjurySafetyLayer(exercicios, lesoes) {
     return {
       ...exercicio,
       nome: primaryRule.replacement.nome,
-      exercicioId: primaryRule.replacement.exercicioId,
+      exercicioId: `${primaryRule.replacement.exercicioId}-${slugify(exercicio.exercicioId || exercicio.nome)}`,
       cargaPropostaKg: reducedLoad,
       adaptacaoTipo: `Substituído por segurança (${matchedRules.map((rule) => rule.region).join(', ')})`,
     };
@@ -160,6 +160,50 @@ function getMinBlocks(dias) {
 }
 
 const MIN_EXERCISES_PER_BLOCK = 5;
+
+const BLOCK_COMPLEMENT_LIBRARY = {
+  A: [
+    { nome: 'Supino Inclinado com Halteres', exercicioId: 'ex-supino-inclinado-halteres' },
+    { nome: 'Crucifixo na Máquina', exercicioId: 'ex-crucifixo-maquina' },
+    { nome: 'Tríceps Corda na Polia', exercicioId: 'ex-triceps-corda-polia' },
+    { nome: 'Mergulho entre Bancos', exercicioId: 'ex-mergulho-entre-bancos' },
+    { nome: 'Flexão de Braço', exercicioId: 'ex-flexao-de-braco' },
+  ],
+  B: [
+    { nome: 'Remada Curvada com Barra', exercicioId: 'ex-remada-curvada-barra' },
+    { nome: 'Puxada Frontal na Polia', exercicioId: 'ex-puxada-frontal-polia' },
+    { nome: 'Remada Unilateral com Halter', exercicioId: 'ex-remada-unilateral-halter' },
+    { nome: 'Rosca Direta com Barra', exercicioId: 'ex-rosca-direta-barra' },
+    { nome: 'Rosca Martelo', exercicioId: 'ex-rosca-martelo' },
+  ],
+  C: [
+    { nome: 'Desenvolvimento com Halteres', exercicioId: 'ex-desenvolvimento-halteres' },
+    { nome: 'Elevação Lateral', exercicioId: 'ex-elevacao-lateral' },
+    { nome: 'Face Pull', exercicioId: 'ex-face-pull' },
+    { nome: 'Prancha Isométrica', exercicioId: 'ex-prancha-isometrica' },
+    { nome: 'Abdominal na Polia', exercicioId: 'ex-abdominal-polia' },
+  ],
+  D: [
+    { nome: 'Agachamento Livre', exercicioId: 'ex-agachamento-livre' },
+    { nome: 'Leg Press 45', exercicioId: 'ex-leg-press-45' },
+    { nome: 'Cadeira Extensora', exercicioId: 'ex-cadeira-extensora' },
+    { nome: 'Afundo com Halteres', exercicioId: 'ex-afundo-halteres' },
+    { nome: 'Panturrilha em Pé', exercicioId: 'ex-panturrilha-em-pe' },
+  ],
+  E: [
+    { nome: 'Stiff com Halteres', exercicioId: 'ex-stiff-halteres' },
+    { nome: 'Mesa Flexora', exercicioId: 'ex-mesa-flexora' },
+    { nome: 'Hip Thrust', exercicioId: 'ex-hip-thrust' },
+    { nome: 'Glúteo na Polia', exercicioId: 'ex-gluteo-polia' },
+    { nome: 'Panturrilha Sentado', exercicioId: 'ex-panturrilha-sentado' },
+  ],
+};
+
+function slugify(value) {
+  return normalizeText(value)
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'exercicio';
+}
 
 function getBlockLabels(dias) {
   const d = Number(dias) || 1;
@@ -212,6 +256,26 @@ function padExercisesPerBlock(exercicios, dias, minPerBlock = MIN_EXERCISES_PER_
   labels.forEach((label) => {
     const list = grouped[label];
     const sourcePool = list.length ? list : (allExercises.length ? allExercises : [{ ...fallbackBase, blocoTreino: label }]);
+    const complementPool = BLOCK_COMPLEMENT_LIBRARY[label] || [];
+    const existingIds = new Set(list.map((e) => String(e.exercicioId || '').toLowerCase()));
+    const existingNames = new Set(list.map((e) => normalizeText(e.nome)));
+
+    for (const comp of complementPool) {
+      if (list.length >= minPerBlock) break;
+
+      const compId = String(comp.exercicioId || '').toLowerCase();
+      const compName = normalizeText(comp.nome);
+      if (existingIds.has(compId) || existingNames.has(compName)) continue;
+
+      list.push({
+        ...fallbackBase,
+        ...comp,
+        blocoTreino: label,
+      });
+      existingIds.add(compId);
+      existingNames.add(compName);
+    }
+
     let i = 0;
 
     while (list.length < minPerBlock) {
@@ -231,6 +295,27 @@ function padExercisesPerBlock(exercicios, dias, minPerBlock = MIN_EXERCISES_PER_
   });
 
   return labels.flatMap((label) => grouped[label]);
+}
+
+function ensureUniqueExerciseIds(exercicios) {
+  const used = new Set();
+
+  return (exercicios || []).map((ex, index) => {
+    const baseId = String(ex?.exercicioId || `ex-${slugify(ex?.nome)}-${index + 1}`).toLowerCase();
+    let candidate = baseId;
+    let n = 2;
+
+    while (used.has(candidate)) {
+      candidate = `${baseId}-${n}`;
+      n += 1;
+    }
+
+    used.add(candidate);
+    return {
+      ...ex,
+      exercicioId: candidate,
+    };
+  });
 }
 
 // Monta a string de instrução explícita de divisão para o prompt de retry
@@ -325,8 +410,12 @@ Diretrizes de Estruturação:
 - Monte a divisao por blocos de treino (A, B, C, D, E) correspondente aos ${diasDisponiveis} dias disponiveis.
 - Priorize a divisão ABCDE se houver 5 dias ou mais, separando pernas em duas fichas distintas e distribuindo bem membros superiores.
 - Preencha o campo blocoTreino apenas com letras (A, B, C, D, E).
+- Trate os dados do aluno e o histórico informado como prioridade para decidir seleção e ordem dos exercícios.
+- Evite plano superficial: cada ficha deve combinar exercícios multiarticulares e isoladores com progressão coerente.
+- Não repita o mesmo exercício principal em várias fichas sem justificativa.
 - Cada ficha (cada bloco) deve ter no mínimo ${MIN_EXERCISES_PER_BLOCK} exercícios diferentes.
 - A quantidade total de exercícios deve ser no mínimo ${minBlocks * MIN_EXERCISES_PER_BLOCK}.
+- Os exercicioId devem ser únicos em toda a lista estruturaExercicios.
 - Use IDs estaveis em kebab-case em "exercicioId" (ex: ex-agachamento-livre).
 - Adapte a quantidade de exercicios ao tempo disponivel (${tempoTreinoMin} min).
 - O objeto raiz deve conter as propriedades "nome" e "estruturaExercicios".`;
@@ -383,6 +472,9 @@ VOCÊ RETORNOU UM PLANO INSUFICIENTE.
 O aluno tem ${diasDisponiveis} dias disponíveis. É OBRIGATÓRIO gerar ${minBlocks} blocos DISTINTOS.
 Cada bloco deve ter no mínimo ${MIN_EXERCISES_PER_BLOCK} exercícios diferentes.
 Isso significa um total mínimo de ${minBlocks * MIN_EXERCISES_PER_BLOCK} exercícios.
+O plano deve ser tecnicamente robusto, com variação real de padrões de movimento e volume por ficha.
+Leia o histórico e dados do aluno para evitar repetição desnecessária.
+Todos os exercicioId devem ser únicos.
 NÃO agrupe todos os exercícios em um único bloco.
 Retorne o JSON completo corrigido agora.`;
       try {
@@ -410,6 +502,8 @@ Retorne o JSON completo corrigido agora.`;
       plano.estruturaExercicios = padExercisesPerBlock(plano.estruturaExercicios, diasDisponiveis, MIN_EXERCISES_PER_BLOCK);
     }
 
+    plano.estruturaExercicios = ensureUniqueExerciseIds(plano.estruturaExercicios);
+
     const mapped = {
       planoId: `ai-${Date.now()}`,
       nome: plano.nome || `Plano AI - ${objetivo}`,
@@ -427,6 +521,7 @@ Retorne o JSON completo corrigido agora.`;
 
     // Aplica a regra de segurança anti-lesão final (interceptador)
     mapped.estruturaExercicios = applyInjurySafetyLayer(mapped.estruturaExercicios, lesoes);
+    mapped.estruturaExercicios = ensureUniqueExerciseIds(mapped.estruturaExercicios);
 
     return res.json({ plano: mapped });
 
