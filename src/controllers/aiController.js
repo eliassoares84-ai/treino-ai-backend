@@ -159,6 +159,80 @@ function getMinBlocks(dias) {
   return 2; // 1-2 dias => AB
 }
 
+const MIN_EXERCISES_PER_BLOCK = 5;
+
+function getBlockLabels(dias) {
+  const d = Number(dias) || 1;
+  if (d >= 5) return ['A', 'B', 'C', 'D', 'E'];
+  if (d === 4) return ['A', 'B', 'C', 'D'];
+  if (d === 3) return ['A', 'B', 'C'];
+  return ['A', 'B'];
+}
+
+function getBlockExerciseCounts(exercicios, dias) {
+  const labels = getBlockLabels(dias);
+  const counts = Object.fromEntries(labels.map((label) => [label, 0]));
+
+  (exercicios || []).forEach((ex) => {
+    const label = String(ex?.blocoTreino || labels[0]).toUpperCase().charAt(0);
+    if (counts[label] !== undefined) {
+      counts[label] += 1;
+    }
+  });
+
+  return counts;
+}
+
+function hasInsufficientExercisesPerBlock(exercicios, dias, minPerBlock = MIN_EXERCISES_PER_BLOCK) {
+  const counts = getBlockExerciseCounts(exercicios, dias);
+  return Object.values(counts).some((count) => count < minPerBlock);
+}
+
+function padExercisesPerBlock(exercicios, dias, minPerBlock = MIN_EXERCISES_PER_BLOCK) {
+  const labels = getBlockLabels(dias);
+  const grouped = Object.fromEntries(labels.map((label) => [label, []]));
+
+  (exercicios || []).forEach((ex) => {
+    const normalizedLabel = String(ex?.blocoTreino || labels[0]).toUpperCase().charAt(0);
+    const safeLabel = labels.includes(normalizedLabel) ? normalizedLabel : labels[0];
+    grouped[safeLabel].push({ ...ex, blocoTreino: safeLabel });
+  });
+
+  const allExercises = labels.flatMap((label) => grouped[label]);
+  const fallbackBase = {
+    nome: 'Exercício Complementar',
+    exercicioId: 'ex-complementar-generico',
+    series: 3,
+    repeticoes: 12,
+    cargaPropostaKg: 0,
+    descansoSegundos: 90,
+    adaptacaoTipo: 'Normal',
+  };
+
+  labels.forEach((label) => {
+    const list = grouped[label];
+    const sourcePool = list.length ? list : (allExercises.length ? allExercises : [{ ...fallbackBase, blocoTreino: label }]);
+    let i = 0;
+
+    while (list.length < minPerBlock) {
+      const base = sourcePool[i % sourcePool.length] || fallbackBase;
+      const index = list.length + 1;
+
+      list.push({
+        ...fallbackBase,
+        ...base,
+        blocoTreino: label,
+        nome: `${base.nome || fallbackBase.nome} (variação ${index})`,
+        exercicioId: `${String(base.exercicioId || fallbackBase.exercicioId)}-var-${label.toLowerCase()}-${index}`,
+      });
+
+      i += 1;
+    }
+  });
+
+  return labels.flatMap((label) => grouped[label]);
+}
+
 // Monta a string de instrução explícita de divisão para o prompt de retry
 function buildBlockRequirementText(dias) {
   const d = Number(dias) || 1;
@@ -251,6 +325,8 @@ Diretrizes de Estruturação:
 - Monte a divisao por blocos de treino (A, B, C, D, E) correspondente aos ${diasDisponiveis} dias disponiveis.
 - Priorize a divisão ABCDE se houver 5 dias ou mais, separando pernas em duas fichas distintas e distribuindo bem membros superiores.
 - Preencha o campo blocoTreino apenas com letras (A, B, C, D, E).
+- Cada ficha (cada bloco) deve ter no mínimo ${MIN_EXERCISES_PER_BLOCK} exercícios diferentes.
+- A quantidade total de exercícios deve ser no mínimo ${minBlocks * MIN_EXERCISES_PER_BLOCK}.
 - Use IDs estaveis em kebab-case em "exercicioId" (ex: ex-agachamento-livre).
 - Adapte a quantidade de exercicios ao tempo disponivel (${tempoTreinoMin} min).
 - O objeto raiz deve conter as propriedades "nome" e "estruturaExercicios".`;
@@ -294,15 +370,19 @@ Diretrizes de Estruturação:
 
     // Validação: conta blocos distintos
     const blocksReturned = new Set(plano.estruturaExercicios.map(e => String(e.blocoTreino || 'A').toUpperCase().charAt(0))).size;
+    const insufficientPerBlock = hasInsufficientExercisesPerBlock(plano.estruturaExercicios, diasDisponiveis, MIN_EXERCISES_PER_BLOCK);
+    const blockCounts = getBlockExerciseCounts(plano.estruturaExercicios, diasDisponiveis);
     console.log(`Blocos retornados: ${blocksReturned} | Mínimo esperado: ${minBlocks}`);
+    console.log('Exercícios por bloco:', blockCounts);
 
-    if (blocksReturned < minBlocks) {
-      console.warn(`Blocos insuficientes (${blocksReturned}/${minBlocks}). Tentativa 2 com prompt mais rígido...`);
+    if (blocksReturned < minBlocks || insufficientPerBlock) {
+      console.warn(`Plano insuficiente (blocos ${blocksReturned}/${minBlocks} | min ${MIN_EXERCISES_PER_BLOCK} por bloco). Tentativa 2 com prompt mais rígido...`);
       const retryPrompt = `${blockRequirementText}
 
-VOCÊ RETORNOU APENAS ${blocksReturned} BLOCO(S). ISSO ESTÁ ERRADO.
+VOCÊ RETORNOU UM PLANO INSUFICIENTE.
 O aluno tem ${diasDisponiveis} dias disponíveis. É OBRIGATÓRIO gerar ${minBlocks} blocos DISTINTOS.
-Cada bloco deve ter no mínimo 4 exercícios diferentes.
+Cada bloco deve ter no mínimo ${MIN_EXERCISES_PER_BLOCK} exercícios diferentes.
+Isso significa um total mínimo de ${minBlocks * MIN_EXERCISES_PER_BLOCK} exercícios.
 NÃO agrupe todos os exercícios em um único bloco.
 Retorne o JSON completo corrigido agora.`;
       try {
@@ -323,6 +403,11 @@ Retorne o JSON completo corrigido agora.`;
     if (blocksAfterRetry < minBlocks) {
       console.warn(`Aplicando fallback de redistribuição (${blocksAfterRetry} -> ${minBlocks} blocos)`);
       plano.estruturaExercicios = redistributeBlocks(plano.estruturaExercicios, diasDisponiveis);
+    }
+
+    if (hasInsufficientExercisesPerBlock(plano.estruturaExercicios, diasDisponiveis, MIN_EXERCISES_PER_BLOCK)) {
+      console.warn(`Aplicando fallback de preenchimento para garantir ${MIN_EXERCISES_PER_BLOCK} exercícios por bloco`);
+      plano.estruturaExercicios = padExercisesPerBlock(plano.estruturaExercicios, diasDisponiveis, MIN_EXERCISES_PER_BLOCK);
     }
 
     const mapped = {
